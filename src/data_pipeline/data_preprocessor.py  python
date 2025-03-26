@@ -1,0 +1,240 @@
+"""
+Data Preprocessing Module - Advanced financial data cleaning and transformation
+"""
+
+import logging
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from typing import Optional, Dict, List, Tuple, Union
+from pydantic import BaseModel, ValidationError, validator, Field
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.impute import SimpleImputer
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+class PreprocessingConfig(BaseModel):
+    """Configuration model for preprocessing operations"""
+    missing_value_strategy: str = Field("median", regex="^(mean|median|mode|drop)$")
+    outlier_method: Optional[str] = Field("zscore", regex="^(zscore|iqr|mad)$")
+    normalization: Optional[str] = Field("standard", regex="^(standard|minmax|none)$")
+    feature_engineering: bool = True
+    volatility_window: int = 14
+    drop_columns: List[str] = []
+    custom_filters: Optional[Dict[str, str]] = None
+    save_clean_copy: bool = True
+
+class PreprocessedDataModel(BaseModel):
+    """Validation model for processed financial data"""
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float = Field(..., gt=0)
+    volume: float = Field(..., ge=0)
+    returns: Optional[float]
+    volatility: Optional[float]
+    normalized_close: Optional[float]
+
+    @validator('high')
+    def high_gte_open(cls, v, values):
+        if 'open' in values and v < values['open']:
+            raise ValueError("High price cannot be less than Open price")
+        return v
+
+    @validator('low')
+    def low_lte_open(cls, v, values):
+        if 'open' in values and v > values['open']:
+            raise ValueError("Low price cannot be greater than Open price")
+        return v
+
+class DataPreprocessor:
+    """Advanced financial data preprocessing pipeline"""
+    
+    def __init__(self, config: PreprocessingConfig = PreprocessingConfig()):
+        self.config = config
+        self.scaler = None
+        self.imputer = None
+        self.feature_stats = {}
+        self.log_transforms = []
+
+    def handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Handle missing values using configured strategy"""
+        logger.info(f"Handling missing values using {self.config.missing_value_strategy} strategy")
+        
+        if self.config.missing_value_strategy == "drop":
+            return df.dropna()
+            
+        self.imputer = SimpleImputer(strategy=self.config.missing_value_strategy)
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        df[numeric_cols] = self.imputer.fit_transform(df[numeric_cols])
+        return df
+
+    def detect_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Identify and handle outliers using selected method"""
+        if not self.config.outlier_method:
+            return df
+
+        logger.info(f"Detecting outliers using {self.config.outlier_method} method")
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        
+        if self.config.outlier_method == "zscore":
+            zscores = (df[numeric_cols] - df[numeric_cols].mean()) / df[numeric_cols].std()
+            return df[(zscores.abs() < 3).all(axis=1)]
+            
+        elif self.config.outlier_method == "iqr":
+            Q1 = df[numeric_cols].quantile(0.25)
+            Q3 = df[numeric_cols].quantile(0.75)
+            IQR = Q3 - Q1
+            return df[~((df[numeric_cols] < (Q1 - 1.5 * IQR)) | 
+                       (df[numeric_cols] > (Q3 + 1.5 * IQR))).any(axis=1)]
+        return df
+
+    def normalize_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize numerical features using specified method"""
+        if self.config.normalization == "none":
+            return df
+
+        logger.info(f"Applying {self.config.normalization} normalization")
+        numeric_cols = df.select_dtypes(include=np.number).columns
+        
+        if self.config.normalization == "standard":
+            self.scaler = StandardScaler()
+        elif self.config.normalization == "minmax":
+            self.scaler = MinMaxScaler()
+            
+        df[numeric_cols] = self.scaler.fit_transform(df[numeric_cols])
+        return df
+
+    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Create technical features for financial analysis"""
+        if not self.config.feature_engineering:
+            return df
+
+        logger.info("Engineering financial features")
+        
+        # Price-based features
+        df['returns'] = df['close'].pct_change()
+        df['volatility'] = df['returns'].rolling(
+            self.config.volatility_window).std()
+        
+        # Volume-based features
+        df['volume_ma'] = df['volume'].rolling(20).mean()
+        df['volume_change'] = df['volume'].pct_change()
+        
+        # Price transforms
+        df['log_close'] = np.log(df['close'])
+        df['ma_20'] = df['close'].rolling(20).mean()
+        df['ma_50'] = df['close'].rolling(50).mean()
+        
+        self.feature_stats = {
+            'mean_returns': df['returns'].mean(),
+            'max_volatility': df['volatility'].max()
+        }
+        return df.dropna()
+
+    def validate_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Validate preprocessed data against schema"""
+        logger.info("Validating preprocessed data")
+        errors = []
+        validated_rows = []
+        
+        for _, row in df.iterrows():
+            try:
+                validated = PreprocessedDataModel(**row.to_dict())
+                validated_rows.append(validated.dict())
+            except ValidationError as e:
+                errors.append({"index": _, "error": str(e)})
+                
+        if errors:
+            logger.error(f"Validation failed for {len(errors)} rows")
+            raise ValidationError(f"Data validation failed with {len(errors)} errors", errors)
+            
+        return pd.DataFrame(validated_rows)
+
+    def apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply custom data filters from configuration"""
+        if not self.config.custom_filters:
+            return df
+
+        logger.info("Applying custom data filters")
+        query_parts = []
+        for col, condition in self.config.custom_filters.items():
+            query_parts.append(f"{col} {condition}")
+        return df.query(" & ".join(query_parts))
+
+    def run_pipeline(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Execute complete preprocessing pipeline"""
+        logger.info("Starting data preprocessing pipeline")
+        
+        pipeline = [
+            self.handle_missing_values,
+            self.detect_outliers,
+            self.apply_filters,
+            self.engineer_features,
+            self.normalize_data,
+            self.validate_data
+        ]
+
+        for step in pipeline:
+            df = step(df)
+            logger.debug(f"Post {step.__name__} shape: {df.shape}")
+            
+        if self.config.drop_columns:
+            df = df.drop(columns=self.config.drop_columns)
+            
+        if self.config.save_clean_copy:
+            clean_path = Path("data/processed/clean_data.parquet")
+            df.to_parquet(clean_path)
+            logger.info(f"Saved clean data to {clean_path}")
+            
+        return df
+
+    def _log_transform(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+        """Apply logarithmic transformation to specified columns"""
+        for col in columns:
+            if col in df.columns:
+                df[f"log_{col}"] = np.log(df[col])
+                self.log_transforms.append(col)
+        return df
+
+    def _calculate_correlations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Calculate feature correlations matrix"""
+        return df.corr()
+
+    @staticmethod
+    def load_raw_data(path: str) -> pd.DataFrame:
+        """Load raw data from various file formats"""
+        path = Path(path)
+        if path.suffix == ".csv":
+            return pd.read_csv(path, parse_dates=['timestamp'])
+        elif path.suffix == ".parquet":
+            return pd.read_parquet(path)
+        elif path.suffix == ".json":
+            return pd.read_json(path, orient='records')
+        else:
+            raise ValueError(f"Unsupported file format: {path.suffix}")
+
+# Example Usage
+if __name__ == "__main__":
+    # Sample configuration
+    config = PreprocessingConfig(
+        missing_value_strategy="median",
+        outlier_method="iqr",
+        normalization="standard",
+        drop_columns=["volume_ma"],
+        custom_filters={"volume": "> 1000"}
+    )
+
+    processor = DataPreprocessor(config)
+    
+    try:
+        raw_data = processor.load_raw_data("data/raw/btc_data.csv")
+        processed_data = processor.run_pipeline(raw_data)
+        print(f"Processed data shape: {processed_data.shape}")
+        print(processed_data.describe())
+        
+    except Exception as e:
+        logger.error(f"Preprocessing failed: {str(e)}")
+        raise
