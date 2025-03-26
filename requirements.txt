@@ -1,0 +1,50 @@
+# Core Requirements
+python>=3.9
+
+# Data Processing & Analysis
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.3
+
+# API Integration
+alpha-vantage>=3.3
+pycoingecko>=3.1
+requests>=2.31
+aiohttp>=3.8
+
+# Machine Learning & RL
+tensorflow>=2.15  # Or pytorch>=2.0
+gymnasium>=0.29  # Newer maintained fork of OpenAI Gym
+stable-baselines3>=2.0
+ray[rllib]>=2.9
+
+# NLP Processing
+nltk>=3.8
+spacy>=3.7
+en-core-web-sm@https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.0/en_core_web_sm-3.7.0-py3-none-any.whl
+
+# Visualization
+matplotlib>=3.7
+seaborn>=0.12
+plotly>=5.18
+
+# Web Interface
+flask>=3.0
+flask-cors>=4.0
+
+# Utilities
+python-dotenv>=1.0
+tqdm>=4.66
+python-dateutil>=2.8
+joblib>=1.3
+pyyaml>=6.0
+
+# Testing & Quality
+pytest>=7.4
+pytest-cov>=4.1
+pytest-mock>=3.11
+responses>=0.24
+
+# Containerization
+gunicorn>=21.2  # For production Flask deployment in Docker
