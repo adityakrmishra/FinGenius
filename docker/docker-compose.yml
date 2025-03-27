@@ -1,0 +1,41 @@
+# docker/docker-compose.yml
+version: '3.8'
+
+services:
+  fingenius:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../:/app
+      - fingenius-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - fingenius-net
+
+  redis:
+    image: redis:6-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - fingenius-net
+
+volumes:
+  fingenius-data:
+  redis-data:
+
+networks:
+  fingenius-net:
